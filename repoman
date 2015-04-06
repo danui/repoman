@@ -1,0 +1,499 @@
+#!/bin/bash
+
+#HLINE="----------------------- "
+HLINE="----------- "
+NEST=0
+REPO_COUNT=0
+MAX_NEST=10
+SVN_LIST=""
+GIT_LIST=""
+SVNGIT_LIST=""
+GITBARE_LIST=""
+SKIP_LIST=""
+NIL_LIST=""
+OPT_DEBUG=0
+NUM_VISITS=0
+
+function say
+{
+    echo "[REPOMAN] $@"
+}
+
+function debug
+{
+    if [[ $OPT_DEBUG -eq 1 ]]; then
+        echo "[DEBUG] $@"
+    fi
+}
+
+function debug_nest
+{
+    debug "[$NEST] $@"
+    return
+}
+
+function git_major
+{
+    echo $(git --version | cut -d" " -f3 | cut -d"." -f1-2)
+}
+
+function get_dir_list # <dir>
+{
+    echo $(find $1 -maxdepth 1 -mindepth 1 -type d)
+}
+
+function visit_dir # <dir>
+{
+    NUM_VISITS=$[ $NUM_VISITS + 1]
+    if [[ ! -d "$1" ]]; then
+        debug_nest "skipped $1 (not a directory)"
+        return
+    fi
+    if [[ $NEST -ge $MAX_NEST ]]; then
+        debug_nest "skipped $1 (nest=${NEST})"
+        return
+    fi
+
+    NEST=$[ $NEST + 1 ]
+    local L=$(get_dir_list $1)
+    local nest_msg=""
+    if [[ $NEST -ge $MAX_NEST ]]; then
+        nest_msg=" (MAX_NEST=$MAX_NEST)"
+    fi
+    local repo_msg=""
+    if [[ -f "$1/SKIP" ]]; then
+        repo_msg=" (SKIP detected)"
+        SKIP_LIST="${SKIP_LIST} $1"
+    elif [[ -f "$1/.SKIP" ]]; then
+        repo_msg=" (.SKIP detected)"
+        SKIP_LIST="${SKIP_LIST} $1"
+
+# ----------------------------------------------------------------------
+# Detect type of repository
+
+    elif [[ -d "$1/.svn" ]]; then
+	if [[ -d "$1/.git" ]]; then
+	    repo_msg=" (svngit detected)"
+	    SVNGIT_LIST="${SVNGIT_LIST} $1"
+	else
+            repo_msg=" (svn detected)"
+            SVN_LIST="${SVN_LIST} $1"
+	fi
+
+    elif [[ -d "$1/.git" ]]; then
+        repo_msg=" (git detected)"
+        GIT_LIST="${GIT_LIST} $1"
+
+    elif [[ -d $1/refs && -d $1/hooks && -d $1/objects ]]; then
+	repo_msg=" (git-bare detected)"
+	GITBARE_LIST="${GITBARE_LIST} ${1}"
+
+# ----------------------------------------------------------------------
+
+    fi
+
+    debug_nest "  visit $1${repo_msg}${nest_msg}"
+    if [[ ${repo_msg} == "" ]]; then
+        before_count=$REPO_COUNT
+        for d in $L; do
+            visit_dir $d
+        done
+        # If the nest is 2, i.e. the directories inside the entry point
+        # directory ".", then check if count had changed.  If it did
+        # not, then add $1 into the NIL_LIST.
+        if [[ $NEST -eq 2 ]]; then
+            if [[ $before_count -eq $REPO_COUNT ]]; then
+                NIL_LIST="${NIL_LIST} $1"
+            fi
+        fi
+    else
+        REPO_COUNT=$[$REPO_COUNT + 1]
+    fi
+    NEST=$[ $NEST - 1 ]
+}
+
+function draw_line # type, command, target
+{
+    say "${HLINE}$@"
+}
+
+function git_user_name # dir
+{
+    pushd $1 > /dev/null
+    git config user.name
+    popd >/dev/null
+}
+
+function git_user_email # dir
+{
+    pushd $1 > /dev/null
+    git config user.email
+    popd >/dev/null
+}
+
+function git_branch # dir
+{
+    pushd $1 > /dev/null
+    git branch | grep ^[*] | awk '{ print $2 }'
+    popd > /dev/null
+}
+
+function op_debug
+{
+    OPT_DEBUG=1
+}
+
+function op_identify
+{
+    local n
+    local e
+    local u
+    local b
+    local d
+    local path_width
+    path_width=$(__path_width $SVN_LIST $SVNGIT_LIST $GIT_LIST $GITBARE_LIST)
+    __print_id_item ${path_width} "TYPE" "PATH" "INFO"
+    __print_id_item ${path_width} "" "" ""
+    for d in $SVN_LIST; do
+	u=$(svn info $d | grep ^URL | cut -d" " -f2-)
+	__print_id_item ${path_width} "svn" "$d" "$u"
+    done
+    for d in $SVNGIT_LIST; do
+	u=$(svn info $d | grep ^URL | cut -d" " -f2-)
+	__print_id_item ${path_width} "svn git" "$d" "$u"
+    done
+    for d in $GIT_LIST; do
+	n=$(git_user_name $d)
+	e=$(git_user_email $d)
+	b=$(git_branch $d)
+	__print_id_item ${path_width} "    git" "$d" "$b, $n, $e"
+    done
+    for d in $GITBARE_LIST; do
+	n=$(git_user_name $d)
+	e=$(git_user_email $d)
+	b=$(git_branch $d)
+	__print_id_item ${path_width} "gitbare" "$d" "$b, $n, $e"
+    done
+}
+function __path_width # list -> m
+{
+    # Computes the maximum path width of paths within `list`.
+    local d
+    local n
+    local m
+    m=0
+    for d in $@; do
+	n=${#d}
+	if [[ $n -gt $m ]]; then
+	    m=$n
+	fi
+    done
+    echo $m
+}
+function __print_id_item # path_width, type, path, info
+{
+    printf "%-7s | %-${1}s | %s\n" "$2" "$3" "$4"
+}
+
+function op_svn_update
+{
+    for d in $SVN_LIST; do
+        draw_line "svn update $d"
+        if [[ -d "$d/.git" ]]; then
+	    say "-------------------- ERROR in repoman --"
+	    continue;
+        fi
+        svn update $d
+    done
+}
+
+function op_git_fetch_all
+{
+    local func
+    if [[ "1.6" == $(git_major) ]]; then
+        func="__git_fetch_all_1_6"
+    else
+        func="__git_fetch_all"
+    fi
+    for d in $SVNGIT_LIST $GIT_LIST; do
+        draw_line "git fetch --all $d"
+        pushd $d > /dev/null
+        $func
+	git status | grep '^#.*is\ behind'
+        popd > /dev/null
+    done
+    # bare repositories don't need git status
+    for d in $GITBARE_LIST; do
+        draw_line "git fetch --all $d"
+        pushd $d > /dev/null
+        $func
+        popd > /dev/null
+    done
+}
+function __git_fetch_all_1_6 # call when in directory.
+{
+    # v1.6's fetch does not have the "--all" option.
+    for i in $(git remote); do
+        git fetch $i
+    done
+}
+function __git_fetch_all # call when in directory.
+{
+    git fetch --all
+}
+
+function op_modified
+{
+    local cmd="modified"
+    for d in $SVN_LIST; do
+        draw_line svn $cmd $d
+        svn status $d | grep -v ^?
+    done
+
+    # NOTE: For git this is not the same as status.  The point of
+    # `modified` is to verify that there are no outstanding changes that
+    # have not been pushed to a remote server.  Thus for `modified` we
+    # do not care about cases where our branch is behind a remote,
+    # rather we care about cases where out branch is ahead of a remote.
+    #
+    # In short, `modified` answers the question: "Is there any left over
+    # work which I should push onto a server before I log off?"
+    #
+    local ver=$(git_major)
+    if [[ "$ver" == "1.6" ]]; then
+        func="__modified_git_1_6"
+    else
+        func="__modified_git"
+    fi
+    for d in $SVNGIT_LIST $GIT_LIST; do
+        draw_line "git $cmd $d"
+        pushd $d > /dev/null
+        $func
+        popd > /dev/null
+    done
+}
+function __modified_git_1_6
+{
+    git status | grep  "^[#].*modified[:]"
+    git status | grep '^#.*is\ ahead'
+}
+function __modified_git
+{
+    git status --porcelain | grep -v "^?"
+    git status | grep '^#.*is\ ahead'
+}
+
+function op_status
+{
+    # This is for GIT only because SVN status is just 'modified'.
+    for d in $SVNGIT_LIST $GIT_LIST; do
+        draw_line "git status $d"
+        pushd $d > /dev/null
+	if [[ 0 -ne $(git status | grep '^#' | grep -v '^#\ On\ branch' | wc -l) ]]; then
+	    git status
+	fi
+        popd > /dev/null
+    done
+}
+
+function op_fast_forward
+{
+    # Do not do this for on SVNGIT_LIST because synchronization is
+    # serious business.
+    local d
+    local b
+    local rb
+    local n
+    for d in $GIT_LIST; do
+	draw_line "git merge --ff-only $d"
+	pushd $d > /dev/null
+	b=$(git branch | grep ^[*] | awk '{ print $2 }')
+	# If remotes has origin, use that.  Else if there is only one
+	# r/b for some remote r, use that.  If there are multiple we
+	# cannot be sure which to use.
+	if [ 1 -eq $(git branch -r | awk '{ print $1 }' | grep origin/$b | wc -l) ]; then
+	    git merge --ff-only origin/${b}
+	else
+	    n=$(echo $(git branch -r | awk '{ print $1 }' | grep ^.*/$b\$ | wc -l))
+	    if [ $n -eq 1 ]; then
+		rb=$(git branch -r | awk '{ print $1 }' | grep ^.*/$b\$)
+		git merge --ff-only ${rb}
+	    elif [ $n -gt 1 ]; then
+		say "Cannot fast forward, multiple remotes for $b: " $(echo $(git branch -r | awk '{ print $1 }' | grep ^.*/$b\$))
+	    fi
+	fi
+	popd > /dev/null
+    done
+}
+
+function op_git
+{
+    for d in $SVNGIT_LIST $GIT_LIST; do
+        draw_line "git $@ $d"
+        pushd $d > /dev/null
+	git $@
+	echo
+        popd > /dev/null
+    done
+}
+
+function op_svn
+{
+    for d in $SVN_LIST; do
+        draw_line "svn $@ $d"
+	svn $@ $d
+	echo
+    done
+}
+
+function op_untracked
+{
+    local n
+    local cmd="untracked"
+    for d in $SVN_LIST; do
+        draw_line svn $cmd $d
+        n=$(svn status $d | grep ^? | wc -l)
+        if [[ $n -gt 0 ]]; then
+            say "Untracked: $n"
+        fi
+    done
+
+    local ver=$(git_major)
+    if [[ "$ver" == "1.6" ]]; then
+        draw_line git $cmd "$GIT_LIST"
+        say "untracked not supported for version $ver of git"
+    else
+        for d in $SVNGIT_LIST $GIT_LIST; do
+            draw_line git $cmd $d
+            pushd $d > /dev/null
+            n=$(git status -uall --porcelain | grep  "^.[?]" | wc -l)
+            if [[ $n -gt 0 ]]; then
+                say "Untracked: $n"
+            fi
+            popd > /dev/null
+        done
+    fi
+}
+
+function op_gc
+{
+    for d in $SVNGIT_LIST $GIT_LIST $GITBARE_LIST; do
+        draw_line git gc $d
+        pushd $d > /dev/null
+	x=$(du -ck .git | tail -1 | awk '{ print $1 }')
+        git gc
+	y=$(du -ck .git | tail -1 | awk '{ print $1 }')
+	z=$[$x-$y]
+	u="KB"
+	if [ $z -gt 1024 ]; then
+	    z=$[$z / 1024];
+	    u="MB"
+	fi
+	say "${HLINE}Before ${x}KB, after ${y}KB, saved ${z} ${u}. ($d)"
+	echo
+        popd > /dev/null
+    done
+}
+
+function op_cleanup
+{
+    local cmd="cleanup"
+    for d in $SVN_LIST; do
+        draw_line svn $cmd $d
+        svn cleanup $d
+    done
+}
+
+function op_help
+{
+    say "Available Commands"
+    say
+    say "help           Help menu."
+    say "debug          Turn on debugging output."
+    say ""
+    say "General Commands for both Subversion and Git"
+    say "--------------------------------------------"
+    say "update (up)    Update svn repos and fetch+fastforward from git repos."
+    say "modified (mo)  Check for modified files or ahead commits."
+    say "untracked (un) Counts the number of untracked items."
+    say "identify (id)  Identify repository."
+    say ""
+    say "Git Commands"
+    say "--------------------------------------------"
+    say "fetch-all (fa) fetch --all."
+    say "status (st)    status."
+    say "fast-fwd (ff)  Fast-forward merge if possible (origin only)"
+    say "gc             Garbage collection (svngit and git only)."
+    say "for-fucks-sake (ffs) Does fa, ff, and st. (FFS hehe)"
+    say "git ...        Run git with args ..."
+    say ""
+    say "Subversion Commands"
+    say "--------------------------------------------"
+    say "cleanup        Subversion cleanup (unlocks repositories)."
+    say "svn ...        Run svn with args ..."
+    say
+    exit 0
+}
+
+# Search for priority commands.  These are executed first.
+for x in $@; do
+    case $x in
+        'debug') op_debug;;
+        'help') op_help;;
+        *) ;; # ignore the rest.
+    esac
+done
+
+# Build up lists.
+debug "Executing $0"
+visit_dir .
+debug "NUM_VISITS:" $NUM_VISITS
+debug "SVN_LIST:" $SVN_LIST
+debug "GIT_LIST:" $GIT_LIST
+debug "SVNGIT_LIST:" $SVNGIT_LIST
+debug "GITBARE_LIST:" $GITBARE_LIST
+
+# Execute commands.
+L=$@
+for x in $L; do
+    shift
+    case $x in
+        'up'|'update')
+            op_svn_update $x
+            op_git_fetch_all $x
+	    op_fast_forward $x
+            ;;
+        'fa'|'fetch-all')
+            op_git_fetch_all $x
+            ;;
+        'mo'|'modified') op_modified $x;;
+        'st'|'status') op_status $x;;
+        'ff'|'fast-fwd') op_fast_forward $x;;
+        'un'|'untracked') op_untracked $x;;
+        'id'|'identify') op_identify $x;;
+	'ffs'|'for-fucks-sake')
+	    op_git_fetch_all $x
+	    op_fast_forward $x
+	    op_status $x
+	    ;;
+        'gc') op_gc $x;;
+	'git') op_git $@; break;;
+	'svn') op_svn $@; break;;
+        'cleanup') op_cleanup $x;;
+        'debug') ;; # ignore
+        'help') ;; # ignore
+        *)
+            say "Unknown command: $x"
+            op_help
+            ;;
+    esac
+done
+
+# Skip list.
+if [[ "$SKIP_LIST" != "" ]]; then
+    say "${HLINE}SKIP_LIST: $SKIP_LIST"
+fi
+# Nil list.
+if [[ "$NIL_LIST" != "" ]]; then
+    say "${HLINE}NIL_LIST: $NIL_LIST"
+fi
