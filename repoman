@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION=1.0.0
+VERSION=1.0.1
 HLINE="----------- "
 NEST=0
 REPO_COUNT=0
@@ -411,6 +411,7 @@ function op_help
     say
     say "help           Help menu."
     say "debug          Turn on debugging output."
+    say "version        Print version."
     say ""
     say "General Commands for both Subversion and Git"
     say "--------------------------------------------"
