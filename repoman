@@ -411,6 +411,7 @@ function op_help
     say
     say "help           Help menu."
     say "debug          Turn on debugging output."
+    say "version        Print version."
     say ""
     say "General Commands for both Subversion and Git"
     say "--------------------------------------------"
