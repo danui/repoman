@@ -3,6 +3,11 @@
 A utility for performing bulk operations on multiple Git clones or
 Subversion checkouts.
 
+## Installation
+
+Copy the `repoman` script to a directory listed on your `PATH` environment
+variable. Or invoke it directly.
+
 ## Usage Examples
 
 This section discusses various usage scenarios. We leave description of
