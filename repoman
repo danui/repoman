@@ -439,6 +439,7 @@ function op_help
 
 function op_version {
     echo $VERSION
+    exit 0
 }
 
 # Search for priority commands.  These are executed first.
