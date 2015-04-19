@@ -134,7 +134,8 @@ function git_user_email # dir
 function git_branch # dir
 {
     pushd $1 > /dev/null
-    git branch | grep ^[*] | awk '{ print $2 }'
+    #git branch | grep ^[*] | awk '{ print $2 }'
+    git rev-parse --abbrev-ref HEAD
     popd > /dev/null
 }
 
